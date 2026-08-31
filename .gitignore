@@ -1,1 +1,14 @@
 plan.md
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.env
+dist/
+build/
+*.egg-info/
+benchmark-results/
