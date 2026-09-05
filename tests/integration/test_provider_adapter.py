@@ -5,15 +5,15 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
-from gateway.adapters.providers.openai_compatible import (
-    OpenAICompatibleProvider,
-    ProviderTimeouts,
-)
+from gateway.adapters.providers.openai_compatible import OpenAICompatibleProvider
+from gateway.adapters.providers.streaming import ProviderTimeouts
 from gateway.domain.errors import (
     UpstreamConnectTimeoutError,
     UpstreamFirstTokenTimeoutError,
+    UpstreamIdleTimeoutError,
     UpstreamProtocolError,
     UpstreamRateLimitedError,
+    UpstreamTotalTimeoutError,
 )
 from gateway.domain.events import StreamFinished, StreamStarted, TextDelta, UsageReported
 from gateway.domain.models import ChatRequest, Message
@@ -173,3 +173,52 @@ async def test_cancelling_consumer_closes_upstream_response() -> None:
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert hanging.closed
+
+
+def frames_of(payload: bytes) -> list[bytes]:
+    return [frame + b"\n\n" for frame in payload.split(b"\n\n") if frame]
+
+
+@pytest.mark.asyncio
+async def test_adapter_enforces_idle_timeout() -> None:
+    """The gap between events is limited independently of the first-token wait."""
+    first_frame, *rest = frames_of(SUCCESS_SSE)
+    slow = SlowStream([first_frame, b"".join(rest)], delay=10)
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200, stream=slow, headers={"content-type": "text/event-stream"}
+        )
+    )
+    adapter = provider(transport, first_token=5, idle=0.01)
+    stream = adapter.stream(request())
+
+    assert isinstance(await anext(stream), StreamStarted)
+    assert isinstance(await anext(stream), TextDelta)
+    with pytest.raises(UpstreamIdleTimeoutError):
+        await anext(stream)
+    assert slow.closed
+
+
+@pytest.mark.asyncio
+async def test_adapter_enforces_total_timeout() -> None:
+    """A stream that never idles for long can still exceed its wall-clock budget."""
+    slow = SlowStream(frames_of(SUCCESS_SSE), delay=0.15)
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200, stream=slow, headers={"content-type": "text/event-stream"}
+        )
+    )
+    client = httpx.AsyncClient(transport=transport)
+    adapter = OpenAICompatibleProvider(
+        name="test",
+        chat_url="http://upstream.test/v1/chat/completions",
+        upstream_model="private",
+        api_key=None,
+        connect_timeout=1,
+        timeouts=ProviderTimeouts(first_token=5, idle=5, total=0.2),
+        client=client,
+    )
+
+    with pytest.raises(UpstreamTotalTimeoutError):
+        _ = [event async for event in adapter.stream(request())]
+    assert slow.closed
