@@ -1,15 +1,17 @@
 import asyncio
 import secrets
+import time
 from collections.abc import AsyncIterator
-from typing import Protocol, runtime_checkable
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, Header, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.background import BackgroundTask
 
+from gateway.adapters.providers.registry import has_credential
 from gateway.api.schemas import ChatCompletionInput
 from gateway.api.translation import (
     CompletionAccumulator,
@@ -27,13 +29,12 @@ from gateway.domain.errors import (
 )
 from gateway.domain.events import ProviderEvent
 from gateway.observability.metrics import GatewayMetrics, RequestObserver
+from gateway.ports.provider import AsyncClosable
 
 router = APIRouter()
 
-
-@runtime_checkable
-class AsyncClosable(Protocol):
-    async def aclose(self) -> None: ...
+CONSOLE_FILE = Path(__file__).with_name("console.html")
+STARTED_AT = int(time.time())
 
 
 async def close_stream(stream: AsyncIterator[ProviderEvent]) -> None:
@@ -65,9 +66,12 @@ async def chat_completions(
     authenticate(settings, authorization)
     service: ChatService = request.app.state.chat_service
     metrics: GatewayMetrics = request.app.state.gateway_metrics
+    # Resolve before admission so an unroutable model is still labelled with a
+    # bounded provider value rather than inventing a new metrics series.
+    routed = service.provider_for(payload.model)
     observer = metrics.begin(
-        provider=service.provider.name,
-        model=settings.public_model,
+        provider=routed.name if routed is not None else "unrouted",
+        model=payload.model if routed is not None else "unrouted",
         streaming=payload.stream,
     )
 
@@ -94,9 +98,9 @@ async def chat_completions(
         raise
 
     if not payload.stream:
-        return await _non_streaming_response(stream, first_event, observer, settings.public_model)
+        return await _non_streaming_response(stream, first_event, observer, payload.model)
 
-    return _streaming_response(stream, first_event, observer, settings.public_model)
+    return _streaming_response(stream, first_event, observer, payload.model)
 
 
 async def _non_streaming_response(
@@ -147,7 +151,9 @@ def _streaming_response(
             yield first_frame
             async for event in stream:
                 observer.observe(event)
-                yield encoder.encode(event)
+                # Held events encode to nothing; do not emit an empty frame.
+                if frame := encoder.encode(event):
+                    yield frame
             yield encoder.done()
             observer.succeed()
         except asyncio.CancelledError:
@@ -174,6 +180,78 @@ def _streaming_response(
         media_type="text/event-stream",
         headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         background=BackgroundTask(cleanup),
+    )
+
+
+@router.get("/v1/models")
+async def list_models(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    settings: Settings = request.app.state.settings
+    authenticate(settings, authorization)
+    service: ChatService = request.app.state.chat_service
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "id": name,
+                    "object": "model",
+                    "created": STARTED_AT,
+                    "owned_by": service.providers[name].name,
+                }
+                for name in service.model_names
+            ],
+        }
+    )
+
+
+def _dev_console_enabled(request: Request) -> bool:
+    settings: Settings = request.app.state.settings
+    return bool(settings.dev_console)
+
+
+@router.get("/__dev/console", include_in_schema=False)
+async def dev_console(request: Request) -> Response:
+    """Serve the request console. Read per request so edits need no restart."""
+    if not _dev_console_enabled(request):
+        return Response(status_code=404)
+    if not CONSOLE_FILE.is_file():
+        return Response(status_code=404)
+    return HTMLResponse(CONSOLE_FILE.read_text(encoding="utf-8"))
+
+
+@router.get("/__dev/config", include_in_schema=False)
+async def dev_config(request: Request) -> Response:
+    """Timeouts and routing the console needs to interpret what it observes."""
+    if not _dev_console_enabled(request):
+        return Response(status_code=404)
+    settings: Settings = request.app.state.settings
+    service: ChatService = request.app.state.chat_service
+    return JSONResponse(
+        {
+            "requires_api_key": bool(settings.api_key and settings.api_key.get_secret_value()),
+            "default_max_tokens": settings.default_max_tokens,
+            "timeouts": {
+                "connect_s": settings.connect_timeout_s,
+                "first_token_s": settings.first_token_timeout_s,
+                "idle_s": settings.idle_timeout_s,
+                "total_s": settings.total_timeout_s,
+            },
+            "models": [
+                {
+                    "name": spec.name,
+                    "kind": spec.kind,
+                    "upstream_model": spec.upstream_model,
+                    "routable": spec.name in service.providers,
+                    # Surfaced so a missing provider credential is visible in the
+                    # console before a request fails with an upstream 401.
+                    "has_key": has_credential(settings, spec),
+                }
+                for spec in settings.routable_models()
+            ],
+        }
     )
 
 

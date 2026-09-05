@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inference Gateway Console</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14181d; --panel-2: #191e25; --line: #232a32;
+    --fg: #d7dde5; --muted: #7d8998; --accent: #4cc9f0; --ok: #3ddc97;
+    --warn: #f4a259; --bad: #ef476f; --think: #b28dff;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.5 var(--sans); height: 100vh; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em; }
+  header .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  header .dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  header .spacer { flex: 1; }
+  header .meta { font: 11px/1 var(--mono); color: var(--muted); }
+
+  main { display: grid; grid-template-columns: 340px 1fr; height: calc(100vh - 43px); }
+  .controls { border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; background: var(--panel); }
+  .output { display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
+
+  label { display: block; font-size: 11px; color: var(--muted); margin: 12px 0 4px;
+          text-transform: uppercase; letter-spacing: .06em; }
+  label:first-child { margin-top: 0; }
+  select, input, textarea, button {
+    width: 100%; background: var(--panel-2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 5px; padding: 7px 9px;
+    font: 12px var(--mono);
+  }
+  textarea { resize: vertical; min-height: 76px; }
+  select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .hint { font-size: 10px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+  .hint.warn { color: var(--warn); }
+  .check { display: flex; align-items: center; gap: 7px; margin-top: 12px; }
+  .check input { width: auto; }
+  .check span { font-size: 12px; color: var(--fg); }
+
+  .actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 16px; }
+  button { cursor: pointer; font-family: var(--sans); font-size: 12px; font-weight: 600; }
+  button.send { background: var(--accent); color: #06202b; border-color: var(--accent); }
+  button.send:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--line); cursor: not-allowed; }
+  button.stop { background: transparent; color: var(--bad); border-color: var(--bad); width: auto; padding: 7px 12px; }
+  button.stop:disabled { color: var(--muted); border-color: var(--line); cursor: not-allowed; }
+
+  .meters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+            background: var(--line); border-bottom: 1px solid var(--line); }
+  .meter { background: var(--panel); padding: 9px 12px; }
+  .meter .k { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .meter .v { font: 17px/1.3 var(--mono); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .meter .v.pending { color: var(--muted); }
+  .meter .v.ok { color: var(--ok); }
+  .meter .v.warn { color: var(--warn); }
+  .meter .v.bad { color: var(--bad); }
+
+  .silence { padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .silence .top { display: flex; justify-content: space-between; font-size: 10px;
+                  color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .silence .top b { font-family: var(--mono); font-size: 11px; color: var(--fg); font-weight: 400; }
+  .bar { height: 5px; background: var(--panel-2); border-radius: 3px; margin-top: 6px;
+         overflow: hidden; position: relative; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--think);
+           transition: width .12s linear, background .2s; }
+  .bar i.warn { background: var(--warn); }
+  .bar i.bad { background: var(--bad); }
+
+  .panes { display: grid; grid-template-columns: 1fr 380px; overflow: hidden; }
+  .pane { display: flex; flex-direction: column; overflow: hidden; }
+  .pane + .pane { border-left: 1px solid var(--line); }
+  .pane h2 { margin: 0; padding: 8px 12px; font-size: 10px; color: var(--muted);
+             text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--line);
+             display: flex; justify-content: space-between; align-items: center; }
+  .pane h2 button { width: auto; padding: 2px 7px; font-size: 10px; background: transparent; color: var(--muted); }
+  .body { flex: 1; overflow-y: auto; padding: 12px; }
+  #answer { font: 13px/1.65 var(--sans); white-space: pre-wrap; word-break: break-word; }
+  #answer .caret { display: inline-block; width: 7px; height: 14px; background: var(--accent);
+                   vertical-align: text-bottom; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #answer .waiting { color: var(--think); font: 12px var(--mono); }
+
+  #log { font: 11px/1.7 var(--mono); }
+  #log div { display: grid; grid-template-columns: 58px 1fr; gap: 8px; padding: 1px 0;
+             border-bottom: 1px solid rgba(35,42,50,.5); }
+  #log .t { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  #log .m { word-break: break-all; }
+  #log .m.ev { color: var(--accent); }
+  #log .m.tok { color: var(--fg); }
+  #log .m.err { color: var(--bad); }
+  #log .m.done { color: var(--ok); }
+  #log .m.gap { color: var(--think); }
+
+  .status { padding: 9px 12px; border-top: 1px solid var(--line); background: var(--panel);
+            font: 11px/1.5 var(--mono); color: var(--muted); min-height: 34px; }
+  .status.err { color: var(--bad); white-space: pre-wrap; }
+  .status.ok { color: var(--ok); }
+  .empty { color: var(--muted); font: 12px var(--mono); }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>Inference Gateway Console</h1>
+  <span class="spacer"></span>
+  <span class="meta" id="limits">loading config…</span>
+</header>
+
+<main>
+  <section class="controls">
+    <label for="model">Model</label>
+    <select id="model"><option>loading…</option></select>
+    <div class="hint" id="modelHint"></div>
+
+    <label for="system">System</label>
+    <textarea id="system" rows="2" placeholder="(optional)"></textarea>
+
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" rows="5">Think carefully, then answer in one sentence: why does a streaming proxy need an idle timeout?</textarea>
+
+    <div class="row">
+      <div>
+        <label for="maxTokens">max_tokens</label>
+        <input id="maxTokens" type="number" min="1" placeholder="provider default">
+      </div>
+      <div>
+        <label for="temperature">temperature</label>
+        <input id="temperature" type="number" min="0" max="2" step="0.1" placeholder="unset">
+      </div>
+    </div>
+    <div class="hint warn" id="tempHint">
+      Leave both unset on reasoning models. Claude (Opus 5 / Sonnet 5 / Opus 4.8 / 4.7)
+      and OpenAI's GPT-5 family reject sampling params with a 400, and reasoning
+      tokens are billed against max_tokens — a small cap returns an empty answer.
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="topP">top_p</label>
+        <input id="topP" type="number" min="0" max="1" step="0.05" placeholder="unset">
+      </div>
+      <div>
+        <label for="stop">stop</label>
+        <input id="stop" type="text" placeholder="unset">
+      </div>
+    </div>
+
+    <div id="keyWrap" hidden>
+      <label for="apiKey">Gateway API key</label>
+      <input id="apiKey" type="password" placeholder="Bearer token">
+    </div>
+
+    <div class="check">
+      <input id="stream" type="checkbox" checked>
+      <span>stream</span>
+    </div>
+
+    <div class="actions">
+      <button class="send" id="send">Send</button>
+      <button class="stop" id="stop" disabled>Cancel</button>
+    </div>
+    <div class="hint">Cancel closes the connection client-side, exercising the gateway's cancellation path.</div>
+  </section>
+
+  <section class="output">
+    <div class="meters">
+      <div class="meter"><div class="k">elapsed</div><div class="v pending" id="mElapsed">—</div></div>
+      <div class="meter"><div class="k">first byte</div><div class="v pending" id="mTtfb">—</div></div>
+      <div class="meter"><div class="k">first token</div><div class="v pending" id="mTtft">—</div></div>
+      <div class="meter"><div class="k">max silence</div><div class="v pending" id="mMaxGap">—</div></div>
+    </div>
+
+    <div class="silence">
+      <div class="top">
+        <span>silence since last token</span>
+        <span><b id="sNow">0.0s</b> <span id="sLimit"></span></span>
+      </div>
+      <div class="bar"><i id="sBar"></i></div>
+    </div>
+
+    <div class="panes">
+      <div class="pane">
+        <h2>Response</h2>
+        <div class="body"><div id="answer" class="empty">No request sent yet.</div></div>
+      </div>
+      <div class="pane">
+        <h2>Stream log <button id="clear">clear</button></h2>
+        <div class="body"><div id="log"></div></div>
+      </div>
+    </div>
+
+    <div class="status" id="status">Idle.</div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    dot: $("dot"), limits: $("limits"), model: $("model"), modelHint: $("modelHint"),
+    system: $("system"), prompt: $("prompt"), maxTokens: $("maxTokens"),
+    temperature: $("temperature"), topP: $("topP"), stop: $("stop"),
+    keyWrap: $("keyWrap"), apiKey: $("apiKey"), stream: $("stream"),
+    send: $("send"), cancel: $("stop"), clear: $("clear"),
+    mElapsed: $("mElapsed"), mTtfb: $("mTtfb"), mTtft: $("mTtft"), mMaxGap: $("mMaxGap"),
+    sNow: $("sNow"), sLimit: $("sLimit"), sBar: $("sBar"),
+    answer: $("answer"), log: $("log"), status: $("status"),
+  };
+
+  // Local upstreams authenticate by not being on the internet.
+  const KEYLESS_KINDS = new Set(["ollama"]);
+  const KEY_VARIABLE = {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    gemini: "GEMINI_API_KEY",
+  };
+
+  let config = { timeouts: { idle_s: 20 }, models: [] };
+  let controller = null;
+  let run = null;
+  let ticker = null;
+
+  const secs = (ms) => (ms / 1000).toFixed(2) + "s";
+
+  function logLine(elapsedMs, text, cls) {
+    const row = document.createElement("div");
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = "+" + (elapsedMs / 1000).toFixed(2);
+    const m = document.createElement("span");
+    m.className = "m " + (cls || "");
+    m.textContent = text;
+    row.append(t, m);
+    els.log.append(row);
+    els.log.parentElement.scrollTop = els.log.parentElement.scrollHeight;
+  }
+
+  function setMeter(el, value, cls) {
+    el.textContent = value;
+    el.className = "v " + (cls || "");
+  }
+
+  function resetMeters() {
+    for (const el of [els.mElapsed, els.mTtfb, els.mTtft, els.mMaxGap]) setMeter(el, "—", "pending");
+    els.sNow.textContent = "0.0s";
+    els.sBar.style.width = "0%";
+    els.sBar.className = "";
+  }
+
+  // The idle timeout is the gateway's, and it is armed against *domain events*,
+  // not upstream bytes. A model that reasons before it speaks produces no domain
+  // event at all, so this bar is the thing to watch on a thinking model.
+  function paintSilence(gapMs) {
+    const limit = config.timeouts.idle_s * 1000;
+    const frac = Math.min(gapMs / limit, 1);
+    els.sNow.textContent = (gapMs / 1000).toFixed(1) + "s";
+    els.sBar.style.width = (frac * 100).toFixed(1) + "%";
+    els.sBar.className = frac > 0.85 ? "bad" : frac > 0.6 ? "warn" : "";
+  }
+
+  function tick() {
+    if (!run) return;
+    const now = performance.now();
+    setMeter(els.mElapsed, secs(now - run.start), "");
+    const gap = now - run.lastToken;
+    paintSilence(gap);
+    if (gap > run.maxGap) {
+      run.maxGap = gap;
+      const limit = config.timeouts.idle_s * 1000;
+      setMeter(els.mMaxGap, secs(gap), gap > limit * 0.85 ? "bad" : gap > limit * 0.6 ? "warn" : "");
+    }
+  }
+
+  function setBusy(busy) {
+    els.send.disabled = busy;
+    els.cancel.disabled = !busy;
+    els.dot.className = busy ? "dot live" : "dot";
+    els.send.textContent = busy ? "Streaming…" : "Send";
+  }
+
+  async function loadConfig() {
+    try {
+      const res = await fetch("/__dev/config");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      config = await res.json();
+    } catch (err) {
+      els.limits.textContent = "config unavailable";
+      els.status.textContent = "Could not read /__dev/config: " + err.message;
+      return;
+    }
+    const t = config.timeouts;
+    els.limits.textContent =
+      `first_token ${t.first_token_s}s · idle ${t.idle_s}s · total ${t.total_s}s`;
+    els.sLimit.textContent = `/ ${t.idle_s}s idle limit`;
+    els.keyWrap.hidden = !config.requires_api_key;
+    // Anthropic requires a cap, so the gateway substitutes its own; every other
+    // upstream is left uncapped, which is what a reasoning model wants.
+    els.maxTokens.placeholder = `unset (anthropic: ${config.default_max_tokens})`;
+
+    els.model.innerHTML = "";
+    const byKind = new Map();
+    for (const m of config.models) {
+      if (!byKind.has(m.kind)) byKind.set(m.kind, []);
+      byKind.get(m.kind).push(m);
+    }
+    for (const [kind, list] of byKind) {
+      const group = document.createElement("optgroup");
+      group.label = kind;
+      for (const m of list) {
+        const opt = document.createElement("option");
+        opt.value = m.name;
+        opt.textContent = m.name;
+        opt.dataset.upstream = m.upstream_model;
+        opt.dataset.kind = m.kind;
+        opt.dataset.hasKey = String(m.has_key !== false);
+        opt.disabled = !m.routable;
+        group.append(opt);
+      }
+      els.model.append(group);
+    }
+    if (!config.models.length) {
+      els.model.innerHTML = "<option>no models configured</option>";
+    }
+    describeModel();
+  }
+
+  function describeModel() {
+    const opt = els.model.selectedOptions[0];
+    if (!opt || !opt.dataset.upstream) {
+      els.modelHint.textContent = "";
+      els.modelHint.className = "hint";
+      return;
+    }
+    const kind = opt.dataset.kind;
+    els.modelHint.textContent = `${kind} → ${opt.dataset.upstream}`;
+    els.modelHint.className = "hint";
+    if (!KEYLESS_KINDS.has(kind) && opt.dataset.hasKey !== "true") {
+      els.modelHint.textContent += ` · no ${KEY_VARIABLE[kind] || "credential"} set`;
+      els.modelHint.className = "hint warn";
+    }
+  }
+
+  function buildBody() {
+    const messages = [];
+    const system = els.system.value.trim();
+    if (system) messages.push({ role: "system", content: system });
+    messages.push({ role: "user", content: els.prompt.value });
+
+    const body = {
+      model: els.model.value,
+      messages,
+      stream: els.stream.checked,
+    };
+    const maxTokens = parseInt(els.maxTokens.value, 10);
+    if (Number.isFinite(maxTokens)) body.max_tokens = maxTokens;
+    const temperature = parseFloat(els.temperature.value);
+    if (Number.isFinite(temperature)) body.temperature = temperature;
+    const topP = parseFloat(els.topP.value);
+    if (Number.isFinite(topP)) body.top_p = topP;
+    const stop = els.stop.value.trim();
+    if (stop) body.stop = stop;
+    return body;
+  }
+
+  function headers() {
+    const h = { "content-type": "application/json" };
+    const key = els.apiKey.value.trim();
+    if (key) h.authorization = "Bearer " + key;
+    return h;
+  }
+
+  function onFirstByte() {
+    if (run.ttfb === null) {
+      run.ttfb = performance.now() - run.start;
+      setMeter(els.mTtfb, secs(run.ttfb), "ok");
+    }
+  }
+
+  function onContent(text) {
+    const now = performance.now();
+    if (run.ttft === null) {
+      run.ttft = now - run.start;
+      const limit = config.timeouts.idle_s * 1000;
+      setMeter(els.mTtft, secs(run.ttft), run.ttft > limit ? "warn" : "ok");
+      els.answer.textContent = "";
+      els.answer.className = "";
+    }
+    run.lastToken = now;
+    run.text += text;
+    els.answer.textContent = run.text;
+    els.answer.append(caret());
+  }
+
+  function caret() {
+    const c = document.createElement("span");
+    c.className = "caret";
+    return c;
+  }
+
+  function handleChunk(payload) {
+    const now = performance.now() - run.start;
+    if (payload.error) {
+      const e = payload.error;
+      logLine(now, `error ${e.type || ""} ${e.code || ""}: ${e.message || ""}`.trim(), "err");
+      fail(`${e.code || e.type || "error"}: ${e.message || "upstream error"}`);
+      return;
+    }
+    const choice = (payload.choices || [])[0];
+    if (choice) {
+      const delta = choice.delta || {};
+      if (delta.role) logLine(now, `role=${delta.role} id=${payload.id || "?"}`, "ev");
+      if (typeof delta.content === "string" && delta.content) {
+        onContent(delta.content);
+        logLine(now, JSON.stringify(delta.content), "tok");
+      }
+      if (choice.finish_reason) {
+        run.finish = choice.finish_reason;
+        logLine(now, `finish_reason=${choice.finish_reason}`, "done");
+      }
+    }
+    if (payload.usage) {
+      run.usage = payload.usage;
+      logLine(now, `usage ${JSON.stringify(payload.usage)}`, "ev");
+    }
+  }
+
+  function fail(message) {
+    run.failed = message;
+  }
+
+  async function readStream(res) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      onFirstByte();
+      buffer += decoder.decode(value, { stream: true });
+
+      let cut;
+      while ((cut = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, cut);
+        buffer = buffer.slice(cut + 2);
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") {
+            logLine(performance.now() - run.start, "[DONE]", "done");
+            continue;
+          }
+          try {
+            handleChunk(JSON.parse(data));
+          } catch {
+            logLine(performance.now() - run.start, "unparseable frame: " + data, "err");
+          }
+        }
+      }
+    }
+  }
+
+  async function send() {
+    controller = new AbortController();
+    run = {
+      start: performance.now(), lastToken: performance.now(),
+      ttfb: null, ttft: null, maxGap: 0, text: "", usage: null,
+      finish: null, failed: null,
+    };
+    els.log.innerHTML = "";
+    els.answer.className = "";
+    els.answer.innerHTML = '<span class="waiting">waiting for first token…</span>';
+    els.status.className = "status";
+    els.status.textContent = "Streaming…";
+    resetMeters();
+    setBusy(true);
+    ticker = setInterval(tick, 100);
+
+    const body = buildBody();
+    logLine(0, `POST /v1/chat/completions model=${body.model}`, "ev");
+
+    try {
+      const res = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      onFirstByte();
+
+      if (!res.ok && !res.headers.get("content-type")?.includes("event-stream")) {
+        const text = await res.text();
+        let detail = text;
+        try { detail = JSON.stringify(JSON.parse(text), null, 2); } catch { /* raw */ }
+        logLine(performance.now() - run.start, `HTTP ${res.status}`, "err");
+        finish(`HTTP ${res.status}\n${detail}`, true);
+        return;
+      }
+
+      if (body.stream) {
+        await readStream(res);
+      } else {
+        const payload = await res.json();
+        const message = payload.choices?.[0]?.message?.content || "";
+        onContent(message);
+        run.finish = payload.choices?.[0]?.finish_reason || null;
+        run.usage = payload.usage || null;
+        logLine(performance.now() - run.start, "non-streaming response", "done");
+      }
+
+      finish(run.failed, Boolean(run.failed));
+    } catch (err) {
+      if (err.name === "AbortError") {
+        logLine(performance.now() - run.start, "cancelled by client", "err");
+        finish("Cancelled by client.", false);
+      } else {
+        logLine(performance.now() - run.start, err.message, "err");
+        finish(err.message, true);
+      }
+    }
+  }
+
+  function finish(message, isError) {
+    clearInterval(ticker);
+    ticker = null;
+    setBusy(false);
+    controller = null;
+    tick();
+    for (const c of els.answer.querySelectorAll(".caret")) c.remove();
+    if (!run.text && !isError) {
+      els.answer.className = "empty";
+      els.answer.textContent = "(no content returned)";
+    }
+
+    const parts = [];
+    if (run.ttft !== null) parts.push(`ttft ${secs(run.ttft)}`);
+    parts.push(`total ${secs(performance.now() - run.start)}`);
+    parts.push(`max silence ${secs(run.maxGap)}`);
+    if (run.finish) parts.push(`finish_reason=${run.finish}`);
+    if (run.usage) {
+      parts.push(
+        `tokens ${run.usage.prompt_tokens}/${run.usage.completion_tokens}` +
+        ` (${run.usage.total_tokens} total)`
+      );
+    }
+
+    if (isError) {
+      els.status.className = "status err";
+      els.status.textContent = message + "\n" + parts.join(" · ");
+    } else if (message) {
+      els.status.className = "status";
+      els.status.textContent = message + " · " + parts.join(" · ");
+    } else {
+      els.status.className = "status ok";
+      els.status.textContent = parts.join(" · ");
+    }
+    run = null;
+  }
+
+  els.send.addEventListener("click", () => { if (!els.send.disabled) send(); });
+  els.cancel.addEventListener("click", () => controller?.abort());
+  els.clear.addEventListener("click", () => { els.log.innerHTML = ""; });
+  els.model.addEventListener("change", describeModel);
+  els.prompt.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !els.send.disabled) send();
+  });
+
+  loadConfig();
+})();
+</script>
+</body>
+</html>
