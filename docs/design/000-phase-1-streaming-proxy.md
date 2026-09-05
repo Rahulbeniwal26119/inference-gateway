@@ -1,6 +1,9 @@
 # V1 streaming proxy design
 
-Status: accepted for implementation
+Status: accepted for implementation. The scope statement below is superseded
+in part by [ADR 0001](../adr/0001-provider-registry-and-explicit-capabilities.md),
+which replaces the single OpenAI-compatible upstream with a provider registry.
+See [Phase 1 notes](001-phase-1-notes.md) for the post-implementation review.
 
 ## Scope
 
