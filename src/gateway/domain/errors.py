@@ -10,9 +10,13 @@ class GatewayError(Exception):
         message: str | None = None,
         *,
         upstream_status: int | None = None,
+        detail: str | None = None,
     ) -> None:
         self.message = message or self.default_message
         self.upstream_status = upstream_status
+        # Logged for operators, never serialised into the client response:
+        # it can quote raw upstream bytes, which are not the caller's to see.
+        self.detail = detail
         super().__init__(self.message)
 
 

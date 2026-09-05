@@ -55,8 +55,8 @@ class CompletionAccumulator:
                 raise UpstreamProtocolError
             self.finish_reason = event.finish_reason
         elif isinstance(event, UsageReported):
-            if self.usage is not None:
-                raise UpstreamProtocolError
+            # Gemini repeats cumulative usage on every chunk where OpenAI sends
+            # it once at the end. The last report is the total either way.
             self.usage = event.usage
 
     def response(self) -> dict[str, Any]:
@@ -86,7 +86,7 @@ class OpenAIStreamEncoder:
         self.completion_id: str | None = None
         self.created: int | None = None
         self.finished = False
-        self.usage_seen = False
+        self.usage: Usage | None = None
 
     def encode(self, event: ProviderEvent) -> bytes:
         if isinstance(event, StreamStarted):
@@ -112,16 +112,20 @@ class OpenAIStreamEncoder:
             self.finished = True
             return self._chunk([{"index": 0, "delta": {}, "finish_reason": event.finish_reason}])
         if isinstance(event, UsageReported):
-            if self.usage_seen:
-                raise UpstreamProtocolError
-            self.usage_seen = True
-            return self._chunk([], usage=event.usage)
+            # Held rather than forwarded: an upstream that repeats cumulative
+            # usage would otherwise emit a usage chunk per token batch. The
+            # public contract is one usage chunk, last, carrying the total.
+            self.usage = event.usage
+            return b""
         raise UpstreamProtocolError
 
     def done(self) -> bytes:
         if not self.finished:
             raise UpstreamProtocolError
-        return b"data: [DONE]\n\n"
+        tail = b"data: [DONE]\n\n"
+        if self.usage is None:
+            return tail
+        return self._chunk([], usage=self.usage) + tail
 
     def _chunk(self, choices: list[dict[str, Any]], usage: Usage | None = None) -> bytes:
         payload: dict[str, Any] = {
